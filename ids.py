@@ -5,9 +5,11 @@
 import sys
 import math
 
-# === Defined IPs ===
+# === List of Valid IPs ===
 waterlooIP = "23.91.163.0/24"
 kitchenerIP = "23.91.184.0/23"
+
+validIPs = [waterlooIP, kitchenerIP]
 
 # === Boolean for handshake acknowledged
 acknowledged = False
@@ -19,11 +21,12 @@ acknowledged = False
 #	Parameters: string -- ip address 
 #	Output: 	tuple -- # of fields to check in an ip prefix, mask # used to '&'' with 
 #				IP field to check based on prefix size
-def checkIP(ip):
+def getIPMaskField(ip):
 	data = ip.split("/")
 	prefixSize = data[1]
 	fieldsToCheck = math.ceil(int(prefixSize)/8)
-	mask = ~ ((1 << (8 - (int(prefixSize) % 8))) - 1)
+
+	mask = 255 if ((int(prefixSize) % 8) == 0) else (~ ((1 << (8 - (int(prefixSize) % 8))) - 1))
 
 	return (int(fieldsToCheck), mask)
 
@@ -42,13 +45,13 @@ def localIP(ipContents):
 # === Check if a provided IP address is within KW IP range ===
 #	Parameters:	list of ints -- contents of an ip address
 #	Output:		boolean
-def kwIP(ipContents):
-	kData = kitchenerIP.split("/")
-	kIP = map(lambda x: int(x), kData[0].split("."))
+def checkIP(ipContents, validIP):
+	data = validIP.split("/")
+	IP = map(lambda x: int(x), data[0].split("."))
 
 	# Grab the number of fields to check in IP prefix and the mask used to check 
 	# if 'the field to check' is in range
-	fields, mask = checkIP(kitchenerIP)
+	fields, mask = getIPMaskField(validIP)
 
 	# Field that needs to be checked in given IP. This is if the prefix size is not a multiple of 
 	# 8 and this can result in a range of numbers.
@@ -56,7 +59,7 @@ def kwIP(ipContents):
 
 	# Check prefix fields that won't have a range
 	for i in range(fields):
-		if ipContents[i] != kIP[i]:
+		if ipContents[i] != IP[i]:
 			return False
 
 	return True
@@ -64,9 +67,9 @@ def kwIP(ipContents):
 # === Check if remote computer tries to connect with LAN server
 #	Parameters:	source IP, destination IP
 #	Output:		boolean
-def tryToConnect(srcIPContents, destIPContents):
-	if (not localIP(srcIPContents) or not kwIP(srcIPContents)) and \
-			(localIP(destIPContents) or kwIP(destIPContents)):
+def tryToConnect(srcIPContents, destIPContents, validIP):
+	if (not localIP(srcIPContents) or not checkIP(srcIPContents, validIP)) and \
+			(localIP(destIPContents) or checkIP(destIPContents, validIP)):
 		return True
 	else: 
 		return False
@@ -112,13 +115,21 @@ while True:
 			print "[Spoofed IP address]: " + "src:" + srcIP + ", dst:" + destIP
 
 		# === UNAUTHORIZED ACCESS ===
-		# Attempted Connection
-		if tryToConnect(srcIPContents, destIPContents) and \
-				(seq == "seq" and seqValue > 1) and not acknowledged:
-			print "[Attempted server connection]: " + "rem:" + srcIP + ", srv:" + destIP
+		attempted = 0
+		accepted = 0
+		for ip in validIPs:
+			# Attempted Connection
+			if tryToConnect(srcIPContents, destIPContents, ip) and \
+					(seq == "seq" and seqValue > 1) and not acknowledged:
+					attempted += 1
+				
+			# Accepted Connection
+			if tryToConnect(srcIPContents, destIPContents, ip) and \
+					(seqValue == "1" and ackValue == "1"):
+					accepted += 1
 
-		# Accepted Connection
-		if tryToConnect(srcIPContents, destIPContents) and \
-				(seqValue == "1" and ackValue == "1"):
+		if attempted == len(validIPs):
+			print "[Attempted server connection]: " + "rem:" + srcIP + ", srv:" + destIP
+		if accepted == len(validIPs):
 			print "[Accepted server connection]: " + "rem:" + srcIP + ", srv:" + destIP
 
