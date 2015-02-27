@@ -3,6 +3,7 @@
 # === attacks based on provided signaures.
 
 import sys
+import math
 
 # === Defined IPs ===
 waterlooIP = "23.91.163.0/24"
@@ -11,27 +12,58 @@ kitchenerIP = "23.91.184.0/23"
 # === Boolean for handshake acknowledged
 acknowledged = False
 
+# === Function used to later determine if IPs are within another IP's range
+# Given an IP in the form of CIDR find the number of IP fields to check 
+# as well as a mask used to determine if a given field is in range of an IP
+# address. 
+#	Parameters: string -- ip address 
+#	Output: 	tuple -- # of fields to check in an ip prefix, mask # used to '&'' with 
+#				IP field to check based on prefix size
+def checkIP(ip):
+	data = ip.split("/")
+	prefixSize = data[1]
+	fieldsToCheck = math.ceil(int(prefixSize)/8)
+	mask = ~ ((1 << (8 - (int(prefixSize) % 8))) - 1)
+
+	return (int(fieldsToCheck), mask)
+
 # === Check if provided IP is within LAN ===
 # IP address must be of the form 10.97.*.* where * is a value from 
 # 0 to 255.
+#	Parameters:	list of ints -- contents of an ip address
+# 	Output:		boolean
 def localIP(ipContents):
-	if (ipContents[0] != "10" or ipContents[1] != "97") or \
-			(int(ipContents[2]) < 0 or int(ipContents[2]) > 255) or \
-			(int(ipContents[3]) < 0 or int(ipContents[3]) > 255):
-		return False
-	else:
+	if (ipContents[0] == 10 and ipContents[1] == 97):
 		return True
+	else:
+		return False
 
-# === Check if provided IP is within KW IP range ===
+
+# === Check if a provided IP address is within KW IP range ===
+#	Parameters:	list of ints -- contents of an ip address
+#	Output:		boolean
 def kwIP(ipContents):
-	if (ipContents[0] != "23" or ipContents[1] != "91") or \
-			(ipContents[2] != "163" and ipContents[2] != "184") or \
-			(ipContents[3] != "0"):
-		return False
-	else:
-		return True
+	kData = kitchenerIP.split("/")
+	kIP = map(lambda x: int(x), kData[0].split("."))
+
+	# Grab the number of fields to check in IP prefix and the mask used to check 
+	# if 'the field to check' is in range
+	fields, mask = checkIP(kitchenerIP)
+
+	# Field that needs to be checked in given IP. This is if the prefix size is not a multiple of 
+	# 8 and this can result in a range of numbers.
+	ipContents[fields - 1] = ipContents[fields - 1] & mask
+
+	# Check prefix fields that won't have a range
+	for i in range(fields):
+		if ipContents[i] != kIP[i]:
+			return False
+
+	return True
 
 # === Check if remote computer tries to connect with LAN server
+#	Parameters:	source IP, destination IP
+#	Output:		boolean
 def tryToConnect(srcIPContents, destIPContents):
 	if (not localIP(srcIPContents) or not kwIP(srcIPContents)) and \
 			(localIP(destIPContents) or kwIP(destIPContents)):
@@ -39,7 +71,7 @@ def tryToConnect(srcIPContents, destIPContents):
 	else: 
 		return False
 
-# === Read in log file and separate each packet
+# === Read in log file of packets
 while True:
 	# Read in from standard input
 	line = sys.stdin.readline()
@@ -62,8 +94,8 @@ while True:
 		srcIP = ips[0]
 		destIP = ips[1]
 
-		srcIPContents = srcIP.split(".")
-		destIPContents = destIP.split(".")
+		srcIPContents = map(lambda x: int(x), srcIP.split("."))
+		destIPContents = map(lambda x: int(x), destIP.split("."))
 
 		seq = fields[2].split()[0]
 		seqValue = fields[2].split()[1]
@@ -90,6 +122,3 @@ while True:
 				(seqValue == "1" and ackValue == "1"):
 			print "[Accepted server connection]: " + "rem:" + srcIP + ", srv:" + destIP
 
-# === Debug Statements ===
-# print(tcpdump)
-# print(ipHeader)
