@@ -164,7 +164,7 @@ def conficker_dga():
 	date_since_epoch = current_date - epoch
 
 	tld_list = ["com", "net", "org", "info", "biz"]
-	filetime = int((date_since_epoch.total_seconds() + 11644473600) * math.pow(10,7))
+	filetime = int(((date_since_epoch.days * 86400) + 11644473600) * math.pow(10,7))
 	prng_key = int((filetime * 0x463DA5676) % overflow) / 0x058028E44000 + 0x0B46A7637
 
 	conficker_domains = []
