@@ -5,18 +5,18 @@
 import sys
 import math
 import re
+import csv
+import time
+import ctypes
 from datetime import datetime
+from time import gmtime, strftime
 
 ############################
 # === GLOBAL DEFINITIONS ===
 ############################
 
-# === List of Valid IPs ===
-waterloo_IP = "23.91.163.0/24"
-kitchener_IP = "23.91.184.0/23"
-local_IP = "10.97.0.0/16"
-
-ip_list = [waterloo_IP, kitchener_IP, local_IP]
+# === LAN IP ===
+local_IP = "10.97.0.0/16"	
 
 # === IP header fields ===
 ip_fields = {}
@@ -29,7 +29,7 @@ src_random_scan = {}
 src_time = {}
 
 # === Code Red Worm Signature ===
-code_red_regex = 'GET.\/default.ida\?[N]+%u9090%u6858%ucbd3%u7801%u9090%u6858%ucbd3%u7801%u9090%u6858%ucbd3%u7801%u9090%u9090%u8190%u00c3%u0003%u8b00%u531b%u53ff%u0078%u0000%u00=a..HTTP\/1.0'
+code_red_regex = 'GET.\/default.ida\?(N+|X+)%u9090%u6858%ucbd3%u7801%u9090%u6858%ucbd3%u7801%u9090%u6858%ucbd3%u7801%u9090%u9090%u8190%u00c3%u0003%u8b00%u531b%u53ff%u0078%u0000%u00=a..HTTP\/1.0'
 
 # === A packets contents ===
 packet_contents = ""
@@ -45,8 +45,19 @@ dest_port = None
 dns_host = None
 
 # === Read in malicious hosts from domain.txt
-with open('domains.txt', 'r') as file:
-	malicious_hosts = [host.strip() for host in file]
+with open('domains.txt', 'r') as f:
+	malicious_hosts = [host.strip() for host in f]
+
+# === Read in GeoLiteCity.csv to find kitchener/waterloo IPs
+kitcher_waterloo_IPS = []
+with open('GeoLiteCity.csv', 'rb') as f:
+	reader = csv.reader(f)
+	for row in reader:
+		if ("Canada" in row and "Waterloo" in row) or ("Canada" in row and "Kitchener" in row):
+			kitcher_waterloo_IPS.append(row[0])
+
+# === Add LAN ip and kitchener/waterloo ips to list
+ip_list = [local_IP] + kitcher_waterloo_IPS
 
 ##################################################
 # === HELPER FUNCTIONS FOR IDENTIFYING ATTACKS ===
@@ -108,16 +119,9 @@ def try_to_connect(src_IP_contents, dest_IP_contents, valid_IPs):
 	else: 
 		return False
 
-# === Check for potential DNS query
-#	Parameters: Destination IP contents
-#	Output: 	boolean
-def query_for_dns(dest_IP_contents):
-	if in_range(dest_IP_contents, [local_IP]) and dest_IP_contents[4] == 53:
-		return True
-	else:
-		return False
-
 # === Function used to compare timestamps
+#	Parameters: time1, time2
+#	Output: The difference between time1 and time2 in seconds
 def time_diff(time1, time2):
 	t1 = datetime.strptime(time1, "%H:%M:%S")
 	t2 = datetime.strptime(time2, "%H:%M:%S")
@@ -125,6 +129,64 @@ def time_diff(time1, time2):
 	difference = t2 - t1
 
 	return difference.seconds
+
+# === Conficker pseudo random number generator algorithm
+def randVal(prng_key):
+	overflow = math.pow(2, 64) - 1
+
+	con_rand = 0x64236735
+	con_dbl = 0.737565675
+
+	d2 = ctypes.c_double(prng_key).value
+
+	prod = ctypes.c_ulonglong(prng_key * con_rand).value
+
+	s_val = ctypes.c_double(math.sin(d2)).value
+
+	x = (prod + s_val)
+	y = x * d2
+	z = y + con_dbl
+	resl = ctypes.c_double(z * d2).value
+
+	resl += ctypes.c_double(math.log(d2)).value
+
+	prng_key = ctypes.c_ulonglong.from_buffer(ctypes.c_double(resl)).value
+
+	return prng_key
+
+# === Conficker's Domain Generation Algorithm
+def conficker_dga():
+	overflow = math.pow(2, 64) - 1
+
+	epoch = datetime.utcfromtimestamp(0)
+	current_date = datetime.now()
+	current_date = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
+	date_since_epoch = current_date - epoch
+
+	tld_list = ["com", "net", "org", "info", "biz"]
+	filetime = int((date_since_epoch.total_seconds() + 11644473600) * math.pow(10,7))
+	prng_key = int((filetime * 0x463DA5676) % overflow) / 0x058028E44000 + 0x0B46A7637
+
+	conficker_domains = []
+
+	for x in range(0, 250):
+		prng_key = randVal(prng_key)
+		n = (abs(ctypes.c_int(prng_key).value) % 4) + 8 
+		domain = ""
+
+		for y in range(0, n):
+			prng_key = randVal(prng_key)
+			domain += chr((abs(ctypes.c_int(prng_key).value) % 26) + 97)
+		
+		prng_key = randVal(prng_key)
+		tld = tld_list[abs(ctypes.c_int(prng_key).value) % 5]
+
+		conficker_domains.append(domain + "." + tld)
+		
+	return conficker_domains
+
+# === Set host list for Confickr worm ===
+conficker_hosts = conficker_dga()
 
 ########################################
 # === BEGIN TO PARSE TCPDUMP PACKETS ===
@@ -144,7 +206,11 @@ while True:
 		packet_contents += hex_to_text
 	
 	# Check if at the beginning of a new packet
-	if header[2] == ":" and header.split()[1] == 'IP':		
+	if header[2] == ":" and header.split()[1] == 'IP':
+		# Reset all variables for new packet
+		fields = ""
+		ip_fields = {}
+		parsed_ip_header = None
 
 		# If we have reached the beginning of a new packet; we need to parse previous
 		# packet contents now for CODE RED WORM
@@ -167,24 +233,18 @@ while True:
 			fields = IP_header.split(":")[1].strip().split(", ")
 		else:
 			# Difficulty with splitting on [udp sum ..]
-			parsed_ip_header = IP_header.split("[")[1].strip().split("] ")
-			if len(parsed_ip_header) == 1:
-				field1 = parsed_ip_header[0]
-				fields = [field1]
-			else:
-				field1 = parsed_ip_header[0]
-				field2 = parsed_ip_header[1].split()
+			parsed_ip_header = IP_header.split(":", 1)[1].strip().split()
 
-				# Concatenate A? and it's request host
-				if "A?" in field2:
-					index = field2.index("A?")
-					host = field2[index+1]
-					dns_host = host[:-1]
-					field2[index] = "A? " + host
-					field2.remove(host)
+			# Concatenate A? and it's request host
+			if "A?" in parsed_ip_header:
+				index = parsed_ip_header.index("A?")
+				host = parsed_ip_header[index+1]
+				dns_host = host[:-1]
+				parsed_ip_header[index] = "A? " + host
+				parsed_ip_header.remove(host)
 
-				# Concatenate both field lists
-				fields = [field1] + field2
+			# Concatenate both field lists
+			fields = parsed_ip_header
 
 		# Add fields to a dictionary
 		for field in fields:
@@ -197,17 +257,14 @@ while True:
 				if field.split()[0] == "A?":
 					ip_fields["A?"] = field.split()[1]
 				else:
-					ip_fields[field] = ""
+					ip_fields[field] = None
 
-		# Packet src and dest IP addresses/ports
+		# Packet src and dest IP addresses
 		src_IP = ips[0]
 		dest_IP = ips[1]
 
 		src_IP_contents = map(lambda x: int(x), src_IP.split("."))
 		dest_IP_contents = map(lambda x: int(x), dest_IP.split("."))
-
-		src_port = src_IP_contents[4]
-		dest_port = dest_IP_contents[4]
 
 		# Packet's timestamp
 		timestamp = header.split()[0].split(".")[0]
@@ -215,45 +272,54 @@ while True:
 		# === SPOOF ATTACK ===
 		# Recall: at least one of the source and destination addresses should be in the 10.97.0.0/16 IP range.
 		# So if they're BOTH not in the range, then there is a spoof attack
-		if not in_range(src_IP_contents, [local_IP]) and not in_range(dest_IP_contents, [local_IP]):
-			print "[Spoofed IP address]: " + "src:" + src_IP + ", dst:" + dest_IP
+		if ip_protocol in ["UDP", "TCP"]:
 
-		# === RANDOM SCANNING ===
-		if src_IP not in src_random_scan:
-			src_random_scan[src_IP] = [dest_IP]
-			src_time[src_IP] = timestamp
-		else:
-			if dest_IP not in src_random_scan[src_IP]:
-				# Check for 10 requests within two second period
-				if (len(src_random_scan[src_IP]) == 9) and (time_diff(timestamp, src_time[src_IP]) <= 2):
-					print "[Potential random scan]: att:" + src_IP.rsplit(".", 1)[0]
-				else:
-					src_random_scan[src_IP].append(dest_IP)
-					src_time[src_IP] = timestamp
+			# Grab packet src/dst IP ports
+			src_port = int(src_IP_contents[4])
+			dest_port = int(dest_IP_contents[4])
 
-		# Check attacks based on TCP packets
-		if ip_protocol == "TCP":
+			if not in_range(src_IP_contents, [local_IP]) and not in_range(dest_IP_contents, [local_IP]):
+				print "[Spoofed IP address]: " + "src:" + src_IP + ", dst:" + dest_IP
 
-			# If there is an initial attempt to connect during handshake, ack will not appear as a field
-			if "ack" in ip_fields.keys():
-				acknowledged = True
-				ack_value = ip_fields["ack"]
+			# === RANDOM SCANNING ===
+			if src_IP not in src_random_scan:
+				src_random_scan[src_IP] = [dest_IP]
+				src_time[src_IP] = timestamp
+			else:
+				if dest_IP not in src_random_scan[src_IP]:
+					# Check for 10 requests within two second period
+					if (len(src_random_scan[src_IP]) == 9) and (time_diff(timestamp, src_time[src_IP]) <= 2):
+						print "[Potential random scan]: att:" + src_IP.rsplit(".", 1)[0]
+					else:
+						src_random_scan[src_IP].append(dest_IP)
+						src_time[src_IP] = timestamp
 
-			# === UNAUTHORIZED ACCESS ===
-			# Attempted Connection
-			if try_to_connect(src_IP_contents, dest_IP_contents, ip_list) and \
-				("seq" in ip_fields.keys()) and int(ip_fields["seq"]) > 1 and not acknowledged:
-					print "[Attempted server connection]: " + "rem:" + src_IP + ", srv:" + dest_IP
-				
-			# Accepted Connection
-			if try_to_connect(src_IP_contents, dest_IP_contents, ip_list) and \
-					("seq" in ip_fields.keys()) and ("ack" in ip_fields.keys()) and int(ip_fields["seq"]) == 1 and int(ip_fields["ack"]) == 1:
-					print "[Accepted server connection]: " + "rem:" + src_IP + ", srv:" + dest_IP
+			# Check attacks based on TCP packets
+			if ip_protocol == "TCP":
 
-		# Check attacks based on UDP packets
-		if ip_protocol == "UDP":
-			# Check for resource record of TypeA
-			if "A?" in ip_fields.keys():
-				# === KNOWN MALICIOUS HOSTS ===
-				if query_for_dns(dest_IP_contents) and (dns_host in malicious_hosts):
-					print "[Malicious name lookup]: " + "src:" + src_IP + ", host:" + dns_host
+				# If there is an initial attempt to connect during handshake, ack will not appear as a field
+				if "ack" in ip_fields.keys():
+					acknowledged = True
+					ack_value = ip_fields["ack"]
+
+				# === UNAUTHORIZED ACCESS ===
+				# Attempted Connection
+				if try_to_connect(src_IP_contents, dest_IP_contents, ip_list) and \
+					("seq" in ip_fields.keys()) and int(ip_fields["seq"]) > 1 and not acknowledged:
+						print "[Attempted server connection]: " + "rem:" + src_IP + ", srv:" + dest_IP
+					
+				# Accepted Connection
+				if try_to_connect(src_IP_contents, dest_IP_contents, ip_list) and \
+						("seq" in ip_fields.keys()) and ("ack" in ip_fields.keys()) and int(ip_fields["seq"]) == 1 and int(ip_fields["ack"]) == 1:
+						print "[Accepted server connection]: " + "rem:" + src_IP + ", srv:" + dest_IP
+
+			# Check attacks based on UDP packets
+			if ip_protocol == "UDP":
+				# Check for resource record of TypeA
+				if "A?" in ip_fields.keys():
+					# === KNOWN MALICIOUS HOSTS ===
+					if dest_port and (dest_port == 53):
+						if (dns_host in malicious_hosts):
+							print "[Malicious name lookup]: " + "src:" + src_IP + ", host:" + dns_host
+						elif (dns_host in conficker_hosts):
+							print "[Conficker worm]: " + "src:" + src_IP
